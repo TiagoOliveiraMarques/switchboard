@@ -14,15 +14,18 @@ import (
 
 func TestAuthHappyPath(t *testing.T) {
 	t.Setenv(agentKeyEnvPath, t.TempDir())
-	LookupPublicKey = nil
-	t.Cleanup(func() { LookupPublicKey = nil })
 
 	// Ensure keys exist and capture the public key for the proxy.
 	_, pub, agentID, err := loadOrCreateAgentKey()
 	if err != nil {
 		t.Fatalf("loadOrCreateAgentKey: %v", err)
 	}
-	LookupPublicKey = func() (ed25519.PublicKey, bool) { return pub, true }
+	lookup := func(id string) (ed25519.PublicKey, bool) {
+		if id != agentID {
+			return nil, false
+		}
+		return pub, true
+	}
 
 	a, b := net.Pipe()
 	defer a.Close()
@@ -32,7 +35,7 @@ func TestAuthHappyPath(t *testing.T) {
 	cb := protocol.New(b)
 
 	errCh := make(chan error, 2)
-	go func() { errCh <- WaitForAgentAuthentication(cb) }()
+	go func() { errCh <- WaitForAgentAuthentication(cb, lookup) }()
 	go func() { errCh <- AuthenticateAsClient(ca) }()
 
 	for i := 0; i < 2; i++ {
@@ -53,14 +56,12 @@ func TestAuthHappyPath(t *testing.T) {
 
 func TestAuthUnknownAgent(t *testing.T) {
 	t.Setenv(agentKeyEnvPath, t.TempDir())
-	LookupPublicKey = nil
-	t.Cleanup(func() { LookupPublicKey = nil })
 
 	// Client key exists, but proxy has no configured key.
 	if _, _, _, err := loadOrCreateAgentKey(); err != nil {
 		t.Fatalf("loadOrCreateAgentKey: %v", err)
 	}
-	LookupPublicKey = func() (ed25519.PublicKey, bool) { return nil, false }
+	lookup := func(string) (ed25519.PublicKey, bool) { return nil, false }
 
 	a, b := net.Pipe()
 	defer a.Close()
@@ -70,7 +71,7 @@ func TestAuthUnknownAgent(t *testing.T) {
 	cb := protocol.New(b)
 
 	errCh := make(chan error, 2)
-	go func() { errCh <- WaitForAgentAuthentication(cb) }()
+	go func() { errCh <- WaitForAgentAuthentication(cb, lookup) }()
 	go func() { errCh <- AuthenticateAsClient(ca) }()
 
 	// One side should error; the other may error too due to connection close.
@@ -87,15 +88,18 @@ func TestAuthUnknownAgent(t *testing.T) {
 
 func TestAuthBadSignature(t *testing.T) {
 	t.Setenv(agentKeyEnvPath, t.TempDir())
-	LookupPublicKey = nil
-	t.Cleanup(func() { LookupPublicKey = nil })
 
 	// Use a real keypair for agent_id, and configure proxy with its public key.
 	_, pub, agentID, err := loadOrCreateAgentKey()
 	if err != nil {
 		t.Fatalf("loadOrCreateAgentKey: %v", err)
 	}
-	LookupPublicKey = func() (ed25519.PublicKey, bool) { return pub, true }
+	lookup := func(id string) (ed25519.PublicKey, bool) {
+		if id != agentID {
+			return nil, false
+		}
+		return pub, true
+	}
 
 	a, b := net.Pipe()
 	defer a.Close()
@@ -106,7 +110,7 @@ func TestAuthBadSignature(t *testing.T) {
 
 	// Proxy runs real handler.
 	proxyErrCh := make(chan error, 1)
-	go func() { proxyErrCh <- WaitForAgentAuthentication(cb) }()
+	go func() { proxyErrCh <- WaitForAgentAuthentication(cb, lookup) }()
 
 	// Manual client with intentionally invalid signature.
 	beginPayload, err := mustMarshalJSON(authBegin{
@@ -164,8 +168,6 @@ func TestAuthBadSignature(t *testing.T) {
 
 func TestAuthExpiredChallenge(t *testing.T) {
 	t.Setenv(agentKeyEnvPath, t.TempDir())
-	LookupPublicKey = nil
-	t.Cleanup(func() { LookupPublicKey = nil })
 
 	// Make TTL tiny to force expiry.
 	oldTTL := challengeTTL
@@ -177,7 +179,12 @@ func TestAuthExpiredChallenge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadOrCreateAgentKey: %v", err)
 	}
-	LookupPublicKey = func() (ed25519.PublicKey, bool) { return pub, true }
+	lookup := func(id string) (ed25519.PublicKey, bool) {
+		if id != agentID {
+			return nil, false
+		}
+		return pub, true
+	}
 
 	a, b := net.Pipe()
 	defer a.Close()
@@ -187,7 +194,7 @@ func TestAuthExpiredChallenge(t *testing.T) {
 	cb := protocol.New(b)
 
 	proxyErrCh := make(chan error, 1)
-	go func() { proxyErrCh <- WaitForAgentAuthentication(cb) }()
+	go func() { proxyErrCh <- WaitForAgentAuthentication(cb, lookup) }()
 
 	beginPayload, err := mustMarshalJSON(authBegin{
 		Type:         "auth_begin",

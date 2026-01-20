@@ -11,12 +11,6 @@ import (
 	"switchboard/internal/protocol"
 )
 
-// LookupPublicKey is used by the proxy side to retrieve the single registered
-// public key for this proxy/agent installation.
-//
-// WaitForAgentAuthentication returns an error if this is nil.
-var LookupPublicKey func() (ed25519.PublicKey, bool)
-
 var (
 	readTimeout  = 30 * time.Second
 	writeTimeout = 5 * time.Second
@@ -112,12 +106,12 @@ func AuthenticateAsClient(connection *protocol.Conn) error {
 	}
 }
 
-func WaitForAgentAuthentication(connection *protocol.Conn) error {
+func WaitForAgentAuthentication(connection *protocol.Conn, lookupPublicKey func(agentID string) (ed25519.PublicKey, bool)) error {
 	if connection == nil {
 		return errors.New("nil connection")
 	}
-	if LookupPublicKey == nil {
-		return errors.New("LookupPublicKey is nil")
+	if lookupPublicKey == nil {
+		return errors.New("lookupPublicKey is nil")
 	}
 
 	beginMsg, err := readAuth(connection, protocol.TypeAuthBegin)
@@ -134,7 +128,7 @@ func WaitForAgentAuthentication(connection *protocol.Conn) error {
 		return failAuth(connection, "protocol_error", "missing agent_id")
 	}
 
-	pub, ok := LookupPublicKey()
+	pub, ok := lookupPublicKey(agentID)
 	if !ok {
 		return failAuth(connection, "unknown_agent", "")
 	}
@@ -143,6 +137,7 @@ func WaitForAgentAuthentication(connection *protocol.Conn) error {
 		return failAuth(connection, "internal_error", "invalid configured public key")
 	}
 	if agentID != expectedAgentID {
+		// Registry must be self-consistent: agent_id is sha256(pubkey).
 		return failAuth(connection, "unknown_agent", "")
 	}
 
