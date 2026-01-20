@@ -113,7 +113,6 @@ Fields:
 - `agent_id`: unique identifier for this agent - This will identify which public key to use by the proxy for validation.
 - `client_time_ms`: integer (Unix epoch millis; optional but recommended)
 
-
 ### Message: `auth_challenge` (Proxy → Agent)
 
 Fields:
