@@ -59,26 +59,74 @@ Rationale: modern, fast, widely available, low foot-guns compared to RSA/ECDSA.
 
 ### Agent identity
 
-Each tunnel connection is identified by an agent_id. The agent_id is nothing more than a cryptographically secure hash
-of the agent's public key. In other words: `agent_id = sha256(public_key_bytes)`.
+Each tunnel connection is identified by an `agent_id`. The `agent_id` is nothing more than a cryptographically secure hash
+of the agent's public key. In other words: `agent_id = hex(sha256(public_key_bytes))`.
 
 This makes it impossible for one agent to impersonate another agent unless ones agent private key is leaked.
 
 ### Key registry (Proxy-side)
 
-The proxy must maintain a registry with each of the agents public keys. For performance reason, it can also store
+The proxy must maintain a registry with each agent's public key. For performance reasons, it can also store
 the agent id (so the sha256 does not need to be constantly computed), but it needs to always make sure both are in sync.
 
 Each key entry has:
 
 - `agent_id` (string)
-- `public_key` (Ed25519, 32 bytes; stored as base64url)
+- `public_key` (Ed25519, 32 bytes; encoded as base64url when serialized)
 - `status` in {`active`, `revoked`}
 - `created_at` (timestamp)
 - `revoked_at` (optional)
 - `comment` (optional; operator/debug metadata)
 
 How keys are provisioned to the proxy is an implementation detail that is left for another design document.
+
+### Key registry storage (PostgreSQL)
+
+The proxy SHOULD persist the key registry in PostgreSQL.
+
+Notes:
+
+- `agent_id` is the hex-encoded SHA-256 digest of the raw Ed25519 public key bytes (32 bytes), i.e. `sha256(pubkey)` as a
+  64-character lowercase hex string.
+- While the protocol/API may transmit the public key as base64url, the DB SHOULD store it as raw bytes (`BYTEA`) to avoid
+  accidental encoding mismatches.
+- There is exactly **one public key per `agent_id`**, since `agent_id` is derived from the public key.
+
+```sql
+-- Registry of allowed agents and their public keys.
+
+-- Enum for key status. (PostgreSQL doesn't support CREATE TYPE IF NOT EXISTS.)
+DO $$
+BEGIN
+  CREATE TYPE agent_key_status AS ENUM ('active', 'revoked');
+EXCEPTION
+  WHEN duplicate_object THEN NULL;
+END
+$$;
+
+CREATE TABLE IF NOT EXISTS agent_keys (
+  -- 64-char lowercase hex string: sha256(public_key)
+  agent_id TEXT PRIMARY KEY
+    CHECK (agent_id ~ '^[0-9a-f]{64}$'),
+
+  -- Raw Ed25519 public key bytes (32 bytes).
+  public_key BYTEA NOT NULL
+    CHECK (octet_length(public_key) = 32),
+
+  -- 'active' keys may authenticate; 'revoked' keys must be rejected.
+  status agent_key_status NOT NULL,
+
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ NULL,
+
+  -- Self-consistency: if status is revoked, revoked_at must be set (and vice-versa).
+  CHECK ((status = 'revoked') = (revoked_at IS NOT NULL))
+);
+
+-- Lookup by agent_id. (PRIMARY KEY also creates a unique btree index on agent_id.)
+CREATE UNIQUE INDEX IF NOT EXISTS agent_keys_agent_id_idx ON agent_keys (agent_id);
+
+```
 
 ## Authentication handshake (challenge-response)
 
