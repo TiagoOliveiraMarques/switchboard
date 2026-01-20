@@ -12,7 +12,6 @@ development environments.
 
 ## Architecture
 
-
 ### Agent
 
 The agent is an application running on the developer machine. It acts as a local proxy from the developer's app and the
